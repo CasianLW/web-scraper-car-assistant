@@ -2,18 +2,12 @@ const axios = require("axios");
 const cheerio = require("cheerio");
 const fs = require("fs");
 
-const baseUrl = "https://www.automobile.fr/voiture/vhc:car,ms1:";
-const startCode = 0;
-const endCode = 100000;
-const validCodes = [];
-const makes = {};
+const baseUrl =
+  "https://www.automobile.fr/recherche-d%C3%A9taill%C3%A9e/vhc:car/pg:dspcar";
+const makeUrlTemplate =
+  "https://www.automobile.fr/voiture/{makeName}/vhc:car,ms1:{makeId}__";
 
-function getRandomDelay(min = 50, max = 150) {
-  return Math.floor(Math.random() * (max - min + 1) + min);
-}
-
-async function checkCode(code) {
-  const url = `${baseUrl}${code}`;
+async function fetchHtml(url) {
   const headers = {
     "User-Agent":
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
@@ -22,44 +16,75 @@ async function checkCode(code) {
     Connection: "keep-alive",
   };
 
-  try {
-    const response = await axios.get(url, { headers });
-    const html = response.data;
-    const $ = cheerio.load(html);
+  const response = await axios.get(url, { headers });
+  return response.data;
+}
 
-    const make = $(".h3.u-text-bold").first().text().trim();
-    const model = $(".vehicle-title").first().text().trim();
+async function scrapeMakes() {
+  const html = await fetchHtml(baseUrl);
+  const $ = cheerio.load(html);
 
-    if (make && !model) {
-      if (!makes[make]) {
-        makes[make] = {
-          makeCode: code,
-          title: make,
-          modelCodes: {},
-        };
-      }
-    } else if (model) {
-      const makeKey = Object.keys(makes).find((key) => model.includes(key));
-
-      if (makeKey) {
-        makes[makeKey].modelCodes[code] = model;
-      }
+  const makes = {};
+  $("#makeModelVariant1Make option").each((index, element) => {
+    const makeId = $(element).attr("value");
+    const makeName = $(element).text().trim();
+    if (makeId && makeName && makeId !== "") {
+      makes[makeId] = {
+        makeCode: makeId,
+        title: makeName,
+        modelCodes: {},
+      };
     }
+  });
 
-    console.log(`Checked code: ${code}`);
-  } catch (error) {
-    // Handle errors (e.g., non-existent code)
-  }
+  return makes;
+}
+
+async function scrapeModels(makeName, makeId) {
+  const url = makeUrlTemplate
+    .replace("{makeName}", makeName)
+    .replace("{makeId}", makeId);
+  const html = await fetchHtml(url);
+  const $ = cheerio.load(html);
+
+  const models = {};
+  $("#makeModelVariant1Model option").each((index, element) => {
+    const modelId = $(element).attr("value");
+    const modelName = $(element).text().trim();
+    if (modelId && modelName && modelId !== "") {
+      models[modelId] = modelName;
+    }
+  });
+
+  return models;
 }
 
 async function main() {
-  for (let code = startCode; code <= endCode; code++) {
-    await checkCode(code);
-    await new Promise((resolve) => setTimeout(resolve, getRandomDelay()));
+  console.log("Starting scraper...");
+  const makes = await scrapeMakes();
+  console.log("Makes scraped:", makes);
+
+  for (const makeId of Object.keys(makes)) {
+    const makeName = makes[makeId].title;
+    console.log(`Scraping models for make: ${makeName} (ID: ${makeId})`);
+    makes[makeId].modelCodes = await scrapeModels(
+      makeName.toLowerCase(),
+      makeId
+    );
+
+    // Add a random delay between requests to avoid rate limiting
+    const delay = Math.floor(Math.random() * (150 - 50 + 1) + 50);
+    console.log(`Waiting for ${delay} ms before next request...`);
+    await new Promise((resolve) => setTimeout(resolve, delay));
   }
 
-  fs.writeFileSync("data/valid-codes.json", JSON.stringify(makes, null, 2));
-  console.log("Scrapping completed. Valid codes saved to validCodes.json");
+  fs.writeFileSync(
+    "data/makes-and-models.json",
+    JSON.stringify(makes, null, 2)
+  );
+  console.log("Scraping completed. Data saved to makesAndModels.json");
 }
 
-main();
+main().catch((error) => {
+  console.error("An error occurred:", error);
+});
